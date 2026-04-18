@@ -22,6 +22,7 @@ const { initDb }      = require('./src/db');
 const setupSignaling  = require('./src/signaling');
 const authRoutes      = require('./src/routes/auth');
 const roomRoutes      = require('./src/routes/rooms');
+const alertRoutes     = require('./src/routes/alerts');
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 initFirebase();
@@ -59,8 +60,9 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', env: process.env.NODE_ENV, ts: new Date().toISOString() });
 });
 
-app.use('/api/auth',  authRoutes);
-app.use('/api/rooms', roomRoutes);
+app.use('/api/auth',   authRoutes);
+app.use('/api/rooms',  roomRoutes);
+app.use('/api/alerts', alertRoutes);
 
 // 404 handler
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
@@ -72,7 +74,8 @@ app.use((err, _req, res, _next) => {
 });
 
 // ── WebRTC Signaling (Socket.io) ──────────────────────────────────────────────
-setupSignaling(server);
+const io = setupSignaling(server);
+app.set('io', io); // expose io to route handlers for alert broadcasting
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
