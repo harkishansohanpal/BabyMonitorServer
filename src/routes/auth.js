@@ -6,7 +6,7 @@ const logger     = require('../utils/logger');
 
 const router = express.Router();
 
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyGenerator: req => `auth:${req.ip}` });
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 200, keyGenerator: req => `auth:${req.ip}` });
 
 // POST /api/auth/verify — upsert user on login
 router.post('/verify', authLimiter, verifyToken, async (req, res) => {
