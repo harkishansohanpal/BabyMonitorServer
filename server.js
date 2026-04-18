@@ -23,6 +23,7 @@ const setupSignaling  = require('./src/signaling');
 const authRoutes      = require('./src/routes/auth');
 const roomRoutes      = require('./src/routes/rooms');
 const alertRoutes     = require('./src/routes/alerts');
+const turnRoutes      = require('./src/routes/turn');
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 initFirebase();
@@ -63,6 +64,7 @@ app.get('/health', (_req, res) => {
 app.use('/api/auth',   authRoutes);
 app.use('/api/rooms',  roomRoutes);
 app.use('/api/alerts', alertRoutes);
+app.use('/api/turn',   turnRoutes);
 
 // 404 handler
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
