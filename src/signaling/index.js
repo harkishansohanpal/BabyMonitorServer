@@ -82,10 +82,11 @@ function setupSignaling(httpServer) {
       }
     });
 
-    socket.on('offer',         data => socket.to(currentRoom).emit('offer',         data));
-    socket.on('answer',        data => socket.to(currentRoom).emit('answer',        data));
-    socket.on('ice-candidate', data => socket.to(currentRoom).emit('ice-candidate', data));
-    socket.on('start-call',    ()   => socket.to(currentRoom).emit('start-call'));
+    socket.on('offer',          data => socket.to(currentRoom).emit('offer',          data));
+    socket.on('answer',         data => socket.to(currentRoom).emit('answer',         data));
+    socket.on('ice-candidate',  data => socket.to(currentRoom).emit('ice-candidate',  data));
+    socket.on('request-offer',  ()   => socket.to(currentRoom).emit('request-offer'));
+    socket.on('start-call',     ()   => socket.to(currentRoom).emit('start-call'));
 
     socket.on('disconnect', () => {
       if (currentRoom && rooms.has(currentRoom)) {
