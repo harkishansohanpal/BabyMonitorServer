@@ -63,7 +63,15 @@ const MONITOR_HTML = `<!DOCTYPE html>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
 (function () {
-  var cfg    = window.__RN_CFG__ || {};
+  // Config is passed in the URL hash so it's available immediately on Android WebView.
+  // Falls back to window.__RN_CFG__ (injected script) if hash is missing.
+  var cfg = {};
+  try {
+    var hash = window.location.hash.substring(1);
+    if (hash) cfg = JSON.parse(decodeURIComponent(hash));
+  } catch(_) {}
+  if (!cfg.token && window.__RN_CFG__) cfg = window.__RN_CFG__;
+
   var TOKEN  = cfg.token  || '';
   var ROOM   = cfg.roomId || '';
   var SIGURL = cfg.signalingUrl || '';
@@ -217,7 +225,14 @@ const VIEWER_HTML = `<!DOCTYPE html>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
 (function () {
-  var cfg    = window.__RN_CFG__ || {};
+  // Config passed in URL hash — immediately available on Android WebView.
+  var cfg = {};
+  try {
+    var hash = window.location.hash.substring(1);
+    if (hash) cfg = JSON.parse(decodeURIComponent(hash));
+  } catch(_) {}
+  if (!cfg.token && window.__RN_CFG__) cfg = window.__RN_CFG__;
+
   var TOKEN  = cfg.token  || '';
   var ROOM   = cfg.roomId || '';
   var SIGURL = cfg.signalingUrl || '';
