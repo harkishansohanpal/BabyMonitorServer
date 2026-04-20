@@ -97,15 +97,28 @@ window.__rnReady = function(cfg) {
 
   ROOM_EL.textContent = 'Room: ' + ROOM;
 
-  function createPC() {
-    if (pc) { try { pc.close(); } catch(_) {} }
-    pc = new RTCPeerConnection(ICE);
+  // One RTCPeerConnection per viewer, keyed by viewer's socket ID
+  var pcs = {};
+  var viewerCount = 0;
+
+  function updateStatus() {
+    if (viewerCount === 0) {
+      STATUS.textContent = 'Connected — waiting for viewer…';
+    } else {
+      STATUS.textContent = '✅ Streaming (' + viewerCount + ' viewer' + (viewerCount !== 1 ? 's' : '') + ')';
+    }
+  }
+
+  function createPCForViewer(viewerSocketId) {
+    if (pcs[viewerSocketId]) { try { pcs[viewerSocketId].close(); } catch(_) {} }
+    var pc = new RTCPeerConnection(ICE);
+    pcs[viewerSocketId] = pc;
     if (localStream) {
       localStream.getTracks().forEach(function(t) { pc.addTrack(t, localStream); });
     }
     pc.onicecandidate = function(e) {
       if (e.candidate && socket && socket.connected) {
-        socket.emit('ice-candidate', { candidate: e.candidate });
+        socket.emit('ice-candidate', { candidate: e.candidate, targetId: viewerSocketId });
       }
     };
     pc.oniceconnectionstatechange = function() {
@@ -137,7 +150,6 @@ window.__rnReady = function(cfg) {
         video.srcObject = localStream;
         STATUS.textContent = 'Camera ready — connecting…';
         rn('camera-ok');
-        createPC();
         connectSocket();
         return;
       } catch (err) {
@@ -164,32 +176,41 @@ window.__rnReady = function(cfg) {
     });
     socket.on('peer-joined', function (data) {
       if (data.role === 'viewer') {
-        if (activeViewerSocketId && activeViewerSocketId !== data.socketId) return;
-        activeViewerSocketId = data.socketId;
+        viewerCount++;
         STATUS.textContent = 'Viewer joined — setting up stream…';
-        createPC();
-        socket.emit('request-offer');
+        createPCForViewer(data.socketId);
+        socket.emit('request-offer', { targetId: data.socketId });
       }
     });
+    // offer comes from a specific viewer (data.fromId = viewerSocketId)
     socket.on('offer', async function (data) {
+      var pc = pcs[data.fromId];
+      if (!pc) return;
       try {
         await pc.setRemoteDescription(data.sdp);
         var answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        socket.emit('answer', { sdp: { type: answer.type, sdp: answer.sdp } });
-        STATUS.textContent = '✅ Streaming live';
+        socket.emit('answer', { sdp: { type: answer.type, sdp: answer.sdp }, targetId: data.fromId });
+        updateStatus();
         rn('streaming');
       } catch (err) {
         ERROR.textContent = 'Stream error: ' + err.message;
       }
     });
+    // ice-candidate from a specific viewer (data.fromId = viewerSocketId)
     socket.on('ice-candidate', async function (data) {
-      if (data.candidate) { try { await pc.addIceCandidate(data.candidate); } catch(_) {} }
+      var pc = pcs[data.fromId];
+      if (pc && data.candidate) { try { await pc.addIceCandidate(data.candidate); } catch(_) {} }
     });
-    socket.on('peer-disconnected', function () {
-      activeViewerSocketId = null;
-      STATUS.textContent = 'Viewer left — waiting…';
-      rn('viewer-left');
+    // peer-disconnected includes socketId of the viewer that left
+    socket.on('peer-disconnected', function (data) {
+      if (data.role === 'viewer' && data.socketId) {
+        if (pcs[data.socketId]) { try { pcs[data.socketId].close(); } catch(_) {} }
+        delete pcs[data.socketId];
+        viewerCount = Math.max(0, viewerCount - 1);
+        updateStatus();
+        if (viewerCount === 0) rn('viewer-left');
+      }
     });
     socket.on('connect_error', function (err) {
       ERROR.textContent = 'Server error: ' + err.message;
@@ -256,6 +277,8 @@ window.__rnReady = function(cfg) {
 
   ROOM_EL.textContent = 'Room: ' + ROOM;
 
+  var cameraSocketId = null; // learned from peer-joined, used to route all messages
+
   function sanitizeSDP(sdpObj) {
     if (!sdpObj || !sdpObj.sdp) return sdpObj;
     var clean = sdpObj.sdp
@@ -283,8 +306,8 @@ window.__rnReady = function(cfg) {
       }
     };
     pc.onicecandidate = function(e) {
-      if (e.candidate && socket && socket.connected) {
-        socket.emit('ice-candidate', { candidate: e.candidate });
+      if (e.candidate && socket && socket.connected && cameraSocketId) {
+        socket.emit('ice-candidate', { candidate: e.candidate, targetId: cameraSocketId });
       }
     };
     return pc;
@@ -308,6 +331,7 @@ window.__rnReady = function(cfg) {
 
   socket.on('peer-joined', function(data) {
     if (data.role === 'camera') {
+      cameraSocketId = data.socketId;
       STATUS.textContent = 'Monitor online — waiting for stream…';
     }
   });
@@ -318,6 +342,7 @@ window.__rnReady = function(cfg) {
     rn('room-error');
   });
 
+  // Camera tells this viewer to create an offer
   socket.on('request-offer', async function() {
     STATUS.textContent = 'Setting up stream…';
     try {
@@ -326,7 +351,7 @@ window.__rnReady = function(cfg) {
       pc.addTransceiver('audio', { direction: 'recvonly' });
       var offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      socket.emit('offer', { sdp: { type: offer.type, sdp: offer.sdp } });
+      socket.emit('offer', { sdp: { type: offer.type, sdp: offer.sdp }, targetId: cameraSocketId });
     } catch(err) {
       ERROR.textContent = 'Setup error: ' + err.message;
       rn('disconnected');

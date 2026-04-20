@@ -2,7 +2,7 @@ const { Server } = require('socket.io');
 const { verifyIdToken } = require('../utils/firebase');
 const logger = require('../utils/logger');
 
-// roomId (= camera's Firebase UID) → { camera: socketId|null, viewer: socketId|null }
+// roomId (= camera's Firebase UID) → { camera: socketId|null, viewers: Set<socketId> }
 const rooms = new Map();
 
 function setupSignaling(httpServer) {
@@ -31,77 +31,96 @@ function setupSignaling(httpServer) {
 
     socket.on('join', ({ roomId, role }) => {
       if (role === 'camera') {
-        // Security: room ID is always the monitor's own Firebase UID — never
-        // trust the client-supplied value for cameras.
+        // Security: room ID is always the monitor's own Firebase UID
         currentRoom = socket.firebaseUser.uid;
         currentRole = 'camera';
 
-        if (!rooms.has(currentRoom)) rooms.set(currentRoom, { camera: null, viewer: null });
+        if (!rooms.has(currentRoom)) rooms.set(currentRoom, { camera: null, viewers: new Set() });
         const room = rooms.get(currentRoom);
         room.camera = socket.id;
         socket.join(currentRoom);
         logger.info('Signaling: camera joined', { roomId: currentRoom, id: socket.id });
 
-        if (room.viewer) {
-          // A viewer was already waiting — tell the camera so it creates the offer.
-          socket.emit('peer-joined', { role: 'viewer', socketId: room.viewer });
-          // Also let the viewer know the camera finally arrived.
-          socket.to(currentRoom).emit('peer-joined', { role: 'camera', socketId: socket.id });
-          logger.info('Signaling: camera joined room with waiting viewer', { roomId: currentRoom });
-        }
+        // Notify each waiting viewer about the camera, and tell camera about each viewer
+        room.viewers.forEach(viewerSocketId => {
+          io.to(viewerSocketId).emit('peer-joined', { role: 'camera', socketId: socket.id });
+          socket.emit('peer-joined', { role: 'viewer', socketId: viewerSocketId });
+        });
 
       } else if (role === 'viewer') {
         const targetRoom = roomId;
 
-        // Validate that the room code looks like a Firebase UID (non-empty string).
         if (!targetRoom || typeof targetRoom !== 'string' || targetRoom.trim().length < 10) {
           socket.emit('room-error', { message: 'Invalid room code.' });
           return;
         }
 
-        // Allow viewer to join even if camera hasn't arrived yet — they'll wait.
-        if (!rooms.has(targetRoom)) rooms.set(targetRoom, { camera: null, viewer: null });
+        if (!rooms.has(targetRoom)) rooms.set(targetRoom, { camera: null, viewers: new Set() });
         const room = rooms.get(targetRoom);
-
-        // Only one viewer at a time — reject a second viewer while one is active.
-        if (room.viewer && room.viewer !== socket.id) {
-          socket.emit('room-error', { message: 'Someone is already viewing this monitor. Only one viewer is allowed at a time.' });
-          logger.info('Signaling: second viewer rejected', { roomId: targetRoom });
-          return;
-        }
 
         currentRoom = targetRoom;
         currentRole = 'viewer';
-        room.viewer = socket.id;
+        room.viewers.add(socket.id);
         socket.join(currentRoom);
-        logger.info('Signaling: viewer joined', { roomId: currentRoom, cameraPresent: !!room.camera, id: socket.id });
+        logger.info('Signaling: viewer joined', {
+          roomId: currentRoom,
+          viewerCount: room.viewers.size,
+          cameraPresent: !!room.camera,
+          id: socket.id,
+        });
 
         if (room.camera) {
-          // Camera is already there — notify it so it creates an offer immediately.
-          socket.to(currentRoom).emit('peer-joined', { role: 'viewer', socketId: socket.id });
+          // Tell camera about the new viewer
+          io.to(room.camera).emit('peer-joined', { role: 'viewer', socketId: socket.id });
+          // Tell viewer about the camera so it can route messages back
+          socket.emit('peer-joined', { role: 'camera', socketId: room.camera });
         } else {
-          // No camera yet — tell the viewer to show a "waiting" status.
-          socket.emit('waiting-for-camera', {
-            message: 'Waiting for the monitor phone to connect…',
-          });
+          socket.emit('waiting-for-camera', { message: 'Waiting for the monitor phone to connect…' });
           logger.info('Signaling: viewer waiting for camera', { roomId: currentRoom });
         }
       }
     });
 
-    socket.on('offer',          data => socket.to(currentRoom).emit('offer',          data));
-    socket.on('answer',         data => socket.to(currentRoom).emit('answer',         data));
-    socket.on('ice-candidate',  data => socket.to(currentRoom).emit('ice-candidate',  data));
-    socket.on('request-offer',  ()   => socket.to(currentRoom).emit('request-offer'));
-    socket.on('start-call',     ()   => socket.to(currentRoom).emit('start-call'));
+    // All signaling messages are routed directly to a specific target socket.
+    // Each message must include a targetId field.
+    // fromId is added by the server so the receiver knows who sent it.
+    socket.on('request-offer', ({ targetId }) => {
+      if (targetId) io.to(targetId).emit('request-offer');
+    });
+
+    socket.on('offer', ({ sdp, targetId }) => {
+      if (targetId) io.to(targetId).emit('offer', { sdp, fromId: socket.id });
+    });
+
+    socket.on('answer', ({ sdp, targetId }) => {
+      if (targetId) io.to(targetId).emit('answer', { sdp, fromId: socket.id });
+    });
+
+    socket.on('ice-candidate', ({ candidate, targetId }) => {
+      if (targetId) io.to(targetId).emit('ice-candidate', { candidate, fromId: socket.id });
+    });
 
     socket.on('disconnect', () => {
       if (currentRoom && rooms.has(currentRoom)) {
         const room = rooms.get(currentRoom);
-        if (currentRole === 'camera') room.camera = null;
-        else room.viewer = null;
-        io.to(currentRoom).emit('peer-disconnected', { role: currentRole });
-        logger.info('Signaling: disconnect', { roomId: currentRoom, role: currentRole });
+        if (currentRole === 'camera') {
+          room.camera = null;
+          // Notify all viewers the camera left
+          room.viewers.forEach(viewerSocketId => {
+            io.to(viewerSocketId).emit('peer-disconnected', { role: 'camera', socketId: socket.id });
+          });
+          logger.info('Signaling: camera disconnected', { roomId: currentRoom });
+        } else if (currentRole === 'viewer') {
+          room.viewers.delete(socket.id);
+          // Notify camera that this specific viewer left
+          if (room.camera) {
+            io.to(room.camera).emit('peer-disconnected', { role: 'viewer', socketId: socket.id });
+          }
+          logger.info('Signaling: viewer disconnected', {
+            roomId: currentRoom,
+            viewerCount: room.viewers.size,
+          });
+        }
       }
     });
   });
