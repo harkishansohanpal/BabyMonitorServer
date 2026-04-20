@@ -24,6 +24,7 @@ const authRoutes      = require('./src/routes/auth');
 const roomRoutes      = require('./src/routes/rooms');
 const alertRoutes     = require('./src/routes/alerts');
 const turnRoutes      = require('./src/routes/turn');
+const appRoutes       = require('./src/routes/app');
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 initFirebase();
@@ -65,6 +66,7 @@ app.use('/api/auth',   authRoutes);
 app.use('/api/rooms',  roomRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/turn',   turnRoutes);
+app.use('/app',        appRoutes);   // WebView HTML pages served over HTTPS
 
 // 404 handler
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
