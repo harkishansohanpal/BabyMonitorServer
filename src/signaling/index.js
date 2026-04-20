@@ -82,22 +82,57 @@ function setupSignaling(httpServer) {
     });
 
     // All signaling messages are routed directly to a specific target socket.
-    // Each message must include a targetId field.
-    // fromId is added by the server so the receiver knows who sent it.
-    socket.on('request-offer', ({ targetId }) => {
-      if (targetId) io.to(targetId).emit('request-offer');
+    // targetId is required for new clients. Old clients omit it — we fall back
+    // to role-based routing so old app builds keep working during upgrades.
+
+    socket.on('request-offer', (data) => {
+      const targetId = data && data.targetId;
+      if (targetId) {
+        io.to(targetId).emit('request-offer');
+      } else {
+        // Old client (no targetId) — broadcast to room
+        socket.to(currentRoom).emit('request-offer');
+      }
     });
 
-    socket.on('offer', ({ sdp, targetId }) => {
-      if (targetId) io.to(targetId).emit('offer', { sdp, fromId: socket.id });
+    socket.on('offer', (data) => {
+      const { sdp, targetId } = data || {};
+      if (targetId) {
+        io.to(targetId).emit('offer', { sdp, fromId: socket.id });
+      } else if (currentRole === 'viewer') {
+        // Viewer always sends offer to camera — route directly
+        const room = rooms.get(currentRoom);
+        if (room && room.camera) {
+          io.to(room.camera).emit('offer', { sdp, fromId: socket.id });
+        }
+      } else {
+        socket.to(currentRoom).emit('offer', { sdp, fromId: socket.id });
+      }
     });
 
-    socket.on('answer', ({ sdp, targetId }) => {
-      if (targetId) io.to(targetId).emit('answer', { sdp, fromId: socket.id });
+    socket.on('answer', (data) => {
+      const { sdp, targetId } = data || {};
+      if (targetId) {
+        io.to(targetId).emit('answer', { sdp, fromId: socket.id });
+      } else {
+        socket.to(currentRoom).emit('answer', { sdp, fromId: socket.id });
+      }
     });
 
-    socket.on('ice-candidate', ({ candidate, targetId }) => {
-      if (targetId) io.to(targetId).emit('ice-candidate', { candidate, fromId: socket.id });
+    socket.on('ice-candidate', (data) => {
+      const { candidate, targetId } = data || {};
+      if (targetId) {
+        io.to(targetId).emit('ice-candidate', { candidate, fromId: socket.id });
+      } else if (currentRole === 'viewer') {
+        // Viewer's ICE candidates always go to camera
+        const room = rooms.get(currentRoom);
+        if (room && room.camera) {
+          io.to(room.camera).emit('ice-candidate', { candidate, fromId: socket.id });
+        }
+      } else {
+        // Camera without targetId — broadcast (old client behaviour)
+        socket.to(currentRoom).emit('ice-candidate', { candidate, fromId: socket.id });
+      }
     });
 
     socket.on('disconnect', () => {
