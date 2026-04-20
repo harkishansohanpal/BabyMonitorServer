@@ -60,6 +60,7 @@ const MONITOR_HTML = `<!DOCTYPE html>
     <div id="error"></div>
   </div>
 
+<script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
 (function () {
@@ -352,7 +353,21 @@ const VIEWER_HTML = `<!DOCTYPE html>
 </html>`;
 
 // ── Routes (no auth — credentials are injected client-side) ───────────────────
-router.get('/monitor', (_req, res) => res.type('html').send(MONITOR_HTML));
-router.get('/viewer',  (_req, res) => res.type('html').send(VIEWER_HTML));
+// Override helmet's strict CSP for these WebView pages — they load CDN scripts
+// and use inline JS, both of which the default CSP would silently block.
+const WEBVIEW_CSP =
+  "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; " +
+  "connect-src * wss: ws: https:; " +
+  "media-src * blob: data:;";
+
+router.get('/monitor', (_req, res) => {
+  res.setHeader('Content-Security-Policy', WEBVIEW_CSP);
+  res.type('html').send(MONITOR_HTML);
+});
+
+router.get('/viewer', (_req, res) => {
+  res.setHeader('Content-Security-Policy', WEBVIEW_CSP);
+  res.type('html').send(VIEWER_HTML);
+});
 
 module.exports = router;
