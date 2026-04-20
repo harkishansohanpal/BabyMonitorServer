@@ -64,14 +64,16 @@ const MONITOR_HTML = `<!DOCTYPE html>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
 (function () {
-  // Config is passed in the URL hash so it's available immediately on Android WebView.
-  // Falls back to window.__RN_CFG__ (injected script) if hash is missing.
-  var cfg = {};
-  try {
-    var hash = window.location.hash.substring(1);
-    if (hash) cfg = JSON.parse(decodeURIComponent(hash));
-  } catch(_) {}
-  if (!cfg.token && window.__RN_CFG__) cfg = window.__RN_CFG__;
+  // iOS: config injected via window.__RN_CFG__ (reliable on WKWebView).
+  // Android: config passed in URL hash (hash is immediately available; injection timing varies).
+  // Check __RN_CFG__ first so iOS always wins, then fall back to hash for Android.
+  var cfg = (typeof window.__RN_CFG__ !== 'undefined') ? window.__RN_CFG__ : {};
+  if (!cfg.token) {
+    try {
+      var hash = window.location.hash.substring(1);
+      if (hash) cfg = JSON.parse(decodeURIComponent(hash));
+    } catch(_) {}
+  }
 
   var TOKEN  = cfg.token  || '';
   var ROOM   = cfg.roomId || '';
