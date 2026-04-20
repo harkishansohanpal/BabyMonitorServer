@@ -90,6 +90,7 @@ const MONITOR_HTML = `<!DOCTYPE html>
   var pc = null;
   var socket;
   var localStream;
+  var activeViewerSocketId = null; // track current viewer — ignore extra joins
 
   function rn(msg) {
     window.ReactNativeWebView && window.ReactNativeWebView.postMessage(msg);
@@ -169,6 +170,10 @@ const MONITOR_HTML = `<!DOCTYPE html>
 
     socket.on('peer-joined', function (data) {
       if (data.role === 'viewer') {
+        // If already connected to a viewer, ignore the second one —
+        // the server rejects them but handle defensively here too.
+        if (activeViewerSocketId && activeViewerSocketId !== data.socketId) return;
+        activeViewerSocketId = data.socketId;
         STATUS.textContent = 'Viewer joined — setting up stream…';
         createPC();
         socket.emit('request-offer');
@@ -193,6 +198,7 @@ const MONITOR_HTML = `<!DOCTYPE html>
     });
 
     socket.on('peer-disconnected', function () {
+      activeViewerSocketId = null; // allow next viewer to connect
       STATUS.textContent = 'Viewer left — waiting…';
       rn('viewer-left');
     });

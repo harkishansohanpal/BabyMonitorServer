@@ -63,6 +63,13 @@ function setupSignaling(httpServer) {
         if (!rooms.has(targetRoom)) rooms.set(targetRoom, { camera: null, viewer: null });
         const room = rooms.get(targetRoom);
 
+        // Only one viewer at a time — reject a second viewer while one is active.
+        if (room.viewer && room.viewer !== socket.id) {
+          socket.emit('room-error', { message: 'Someone is already viewing this monitor. Only one viewer is allowed at a time.' });
+          logger.info('Signaling: second viewer rejected', { roomId: targetRoom });
+          return;
+        }
+
         currentRoom = targetRoom;
         currentRole = 'viewer';
         room.viewer = socket.id;
