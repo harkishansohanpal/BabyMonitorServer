@@ -105,23 +105,41 @@ const MONITOR_HTML = `<!DOCTYPE html>
 
   async function startCamera() {
     STATUS.textContent = 'Requesting camera…';
-    var constraints = [
+    rn('camera-starting');
+
+    // Check API availability first — Samsung WebView sometimes lacks mediaDevices
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      var msg = 'mediaDevices API not available on this browser/device';
+      ERROR.textContent = msg;
+      STATUS.textContent = 'Camera not supported';
+      rn('camera-error:' + msg);
+      return;
+    }
+
+    // Try progressively looser constraints so older Samsung cameras still work
+    var constraintSets = [
+      { video: { facingMode: { exact: 'environment' } }, audio: true },
       { video: { facingMode: 'environment' }, audio: true },
       { video: true, audio: true },
+      { video: true, audio: false },
     ];
-    for (var i = 0; i < constraints.length; i++) {
+
+    for (var i = 0; i < constraintSets.length; i++) {
       try {
-        localStream = await navigator.mediaDevices.getUserMedia(constraints[i]);
+        rn('camera-try:' + i);
+        localStream = await navigator.mediaDevices.getUserMedia(constraintSets[i]);
         video.srcObject = localStream;
         STATUS.textContent = 'Camera ready — connecting…';
+        rn('camera-ok');
         createPC();
         connectSocket();
         return;
       } catch (err) {
-        if (i === constraints.length - 1) {
-          ERROR.textContent = 'Camera error: ' + err.message;
+        rn('camera-fail:' + i + ':' + err.name + ':' + err.message);
+        if (i === constraintSets.length - 1) {
+          ERROR.textContent = 'Camera error: ' + err.name + ' — ' + err.message;
           STATUS.textContent = 'Could not access camera';
-          rn('error');
+          rn('camera-error:' + err.name + ':' + err.message);
         }
       }
     }
