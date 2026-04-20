@@ -63,40 +63,39 @@ const MONITOR_HTML = `<!DOCTYPE html>
 <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
-(function () {
-  // iOS: config injected via window.__RN_CFG__ (reliable on WKWebView).
-  // Android: config passed in URL hash (hash is immediately available; injection timing varies).
-  // Check __RN_CFG__ first so iOS always wins, then fall back to hash for Android.
-  var cfg = (typeof window.__RN_CFG__ !== 'undefined') ? window.__RN_CFG__ : {};
-  if (!cfg.token) {
-    try {
-      var hash = window.location.hash.substring(1);
-      if (hash) cfg = JSON.parse(decodeURIComponent(hash));
-    } catch(_) {}
-  }
+// Config is delivered by React Native via injectJavaScript after page load
+// (most reliable cross-platform). injectedJavaScriptBeforeContentLoaded also
+// sets window.__RN_CFG__ as an early path for iOS. URL hash is a final fallback.
+// The page waits for window.__rnReady(cfg) to be called before starting.
+
+var STATUS  = document.getElementById('status');
+var ROOM_EL = document.getElementById('room');
+var ERROR   = document.getElementById('error');
+var video   = document.getElementById('v');
+
+var pc = null;
+var socket;
+var localStream;
+var activeViewerSocketId = null;
+var initialized = false;
+
+function rn(msg) {
+  window.ReactNativeWebView && window.ReactNativeWebView.postMessage(msg);
+}
+
+// Called by React Native with the full config object
+window.__rnReady = function(cfg) {
+  if (initialized) return;
+  initialized = true;
 
   var TOKEN  = cfg.token  || '';
   var ROOM   = cfg.roomId || '';
   var SIGURL = cfg.signalingUrl || '';
-
-  var STATUS = document.getElementById('status');
-  var ROOM_EL= document.getElementById('room');
-  var ERROR  = document.getElementById('error');
-  var video  = document.getElementById('v');
-  ROOM_EL.textContent = 'Room: ' + ROOM;
-
-  var ICE = cfg.iceServers
+  var ICE    = cfg.iceServers && cfg.iceServers.length
     ? { iceServers: cfg.iceServers }
     : { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-  var pc = null;
-  var socket;
-  var localStream;
-  var activeViewerSocketId = null; // track current viewer — ignore extra joins
-
-  function rn(msg) {
-    window.ReactNativeWebView && window.ReactNativeWebView.postMessage(msg);
-  }
+  ROOM_EL.textContent = 'Room: ' + ROOM;
 
   function createPC() {
     if (pc) { try { pc.close(); } catch(_) {} }
@@ -118,8 +117,6 @@ const MONITOR_HTML = `<!DOCTYPE html>
   async function startCamera() {
     STATUS.textContent = 'Requesting camera…';
     rn('camera-starting');
-
-    // Check API availability first — Samsung WebView sometimes lacks mediaDevices
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       var msg = 'mediaDevices API not available on this browser/device';
       ERROR.textContent = msg;
@@ -127,15 +124,12 @@ const MONITOR_HTML = `<!DOCTYPE html>
       rn('camera-error:' + msg);
       return;
     }
-
-    // Try progressively looser constraints so older Samsung cameras still work
     var constraintSets = [
       { video: { facingMode: { exact: 'environment' } }, audio: true },
       { video: { facingMode: 'environment' }, audio: true },
       { video: true, audio: true },
       { video: true, audio: false },
     ];
-
     for (var i = 0; i < constraintSets.length; i++) {
       try {
         rn('camera-try:' + i);
@@ -163,17 +157,13 @@ const MONITOR_HTML = `<!DOCTYPE html>
       transports: ['websocket'],
       reconnection: true,
     });
-
     socket.on('connect', function () {
       STATUS.textContent = 'Connected — waiting for viewer…';
       socket.emit('join', { roomId: ROOM, role: 'camera' });
       rn('socket-connected');
     });
-
     socket.on('peer-joined', function (data) {
       if (data.role === 'viewer') {
-        // If already connected to a viewer, ignore the second one —
-        // the server rejects them but handle defensively here too.
         if (activeViewerSocketId && activeViewerSocketId !== data.socketId) return;
         activeViewerSocketId = data.socketId;
         STATUS.textContent = 'Viewer joined — setting up stream…';
@@ -181,7 +171,6 @@ const MONITOR_HTML = `<!DOCTYPE html>
         socket.emit('request-offer');
       }
     });
-
     socket.on('offer', async function (data) {
       try {
         await pc.setRemoteDescription(data.sdp);
@@ -194,24 +183,32 @@ const MONITOR_HTML = `<!DOCTYPE html>
         ERROR.textContent = 'Stream error: ' + err.message;
       }
     });
-
     socket.on('ice-candidate', async function (data) {
       if (data.candidate) { try { await pc.addIceCandidate(data.candidate); } catch(_) {} }
     });
-
     socket.on('peer-disconnected', function () {
-      activeViewerSocketId = null; // allow next viewer to connect
+      activeViewerSocketId = null;
       STATUS.textContent = 'Viewer left — waiting…';
       rn('viewer-left');
     });
-
     socket.on('connect_error', function (err) {
       ERROR.textContent = 'Server error: ' + err.message;
     });
   }
 
   startCamera();
-})();
+};
+
+// If injectedJavaScriptBeforeContentLoaded already set __RN_CFG__, use it now
+if (window.__RN_CFG__ && window.__RN_CFG__.token) {
+  window.__rnReady(window.__RN_CFG__);
+} else {
+  // Final fallback: try URL hash (Android)
+  try {
+    var h = window.location.hash.substring(1);
+    if (h) { var hcfg = JSON.parse(decodeURIComponent(h)); if (hcfg.token) window.__rnReady(hcfg); }
+  } catch(_) {}
+}
 </script>
 </body>
 </html>`;
@@ -233,34 +230,31 @@ const VIEWER_HTML = `<!DOCTYPE html>
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
-(function () {
-  // Config passed in URL hash — immediately available on Android WebView.
-  var cfg = {};
-  try {
-    var hash = window.location.hash.substring(1);
-    if (hash) cfg = JSON.parse(decodeURIComponent(hash));
-  } catch(_) {}
-  if (!cfg.token && window.__RN_CFG__) cfg = window.__RN_CFG__;
+var STATUS  = document.getElementById('status');
+var ROOM_EL = document.getElementById('room');
+var ERROR   = document.getElementById('error');
+var video   = document.getElementById('v');
+
+var pc = null;
+var socket = null;
+var initialized = false;
+
+function rn(msg) {
+  window.ReactNativeWebView && window.ReactNativeWebView.postMessage(msg);
+}
+
+window.__rnReady = function(cfg) {
+  if (initialized) return;
+  initialized = true;
 
   var TOKEN  = cfg.token  || '';
   var ROOM   = cfg.roomId || '';
   var SIGURL = cfg.signalingUrl || '';
-
-  var STATUS = document.getElementById('status');
-  var ROOM_EL= document.getElementById('room');
-  var ERROR  = document.getElementById('error');
-  var video  = document.getElementById('v');
-  ROOM_EL.textContent = 'Room: ' + ROOM;
-
-  var ICE_SERVERS = cfg.iceServers
+  var ICE    = cfg.iceServers && cfg.iceServers.length
     ? { iceServers: cfg.iceServers }
     : { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-  var pc = null;
-
-  function rn(msg) {
-    window.ReactNativeWebView && window.ReactNativeWebView.postMessage(msg);
-  }
+  ROOM_EL.textContent = 'Room: ' + ROOM;
 
   function sanitizeSDP(sdpObj) {
     if (!sdpObj || !sdpObj.sdp) return sdpObj;
@@ -273,7 +267,7 @@ const VIEWER_HTML = `<!DOCTYPE html>
 
   function createPC() {
     if (pc) { try { pc.close(); } catch(_) {} }
-    pc = new RTCPeerConnection(ICE_SERVERS);
+    pc = new RTCPeerConnection(ICE);
     pc.ontrack = function(e) {
       if (e.streams && e.streams[0]) {
         video.srcObject = e.streams[0];
@@ -289,14 +283,14 @@ const VIEWER_HTML = `<!DOCTYPE html>
       }
     };
     pc.onicecandidate = function(e) {
-      if (e.candidate && socket.connected) {
+      if (e.candidate && socket && socket.connected) {
         socket.emit('ice-candidate', { candidate: e.candidate });
       }
     };
     return pc;
   }
 
-  var socket = io(SIGURL, {
+  socket = io(SIGURL, {
     auth: { token: TOKEN },
     transports: ['websocket'],
     reconnection: true,
@@ -316,6 +310,12 @@ const VIEWER_HTML = `<!DOCTYPE html>
     if (data.role === 'camera') {
       STATUS.textContent = 'Monitor online — waiting for stream…';
     }
+  });
+
+  socket.on('room-error', function(data) {
+    ERROR.textContent = data.message || 'Room error';
+    STATUS.textContent = 'Could not join room';
+    rn('room-error');
   });
 
   socket.on('request-offer', async function() {
@@ -355,7 +355,18 @@ const VIEWER_HTML = `<!DOCTYPE html>
   socket.on('connect_error', function(err) {
     ERROR.textContent = 'Server error: ' + err.message;
   });
-})();
+};
+
+// If injectedJavaScriptBeforeContentLoaded already set __RN_CFG__, use it now
+if (window.__RN_CFG__ && window.__RN_CFG__.token) {
+  window.__rnReady(window.__RN_CFG__);
+} else {
+  // Final fallback: try URL hash (Android)
+  try {
+    var h = window.location.hash.substring(1);
+    if (h) { var hcfg = JSON.parse(decodeURIComponent(h)); if (hcfg.token) window.__rnReady(hcfg); }
+  } catch(_) {}
+}
 </script>
 </body>
 </html>`;
